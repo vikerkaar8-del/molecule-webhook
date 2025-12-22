@@ -4,164 +4,166 @@ import fetch from 'node-fetch';
 const app = express();
 app.use(express.json());
 
-// ================== CONFIG ==================
-const PORT = process.env.PORT || 3000;
+// ======================
+// ENV
+// ======================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const GAS_URL = process.env.GAS_URL;
+const GAS_URL        = process.env.GAS_URL;
 
-const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
-const ALLOWED_USERS = ['1356353979', '499185572'];
-
-// ================== STATE ==================
-const userState = {}; // chatId -> { mode }
-
-// ================== HELPERS ==================
-async function tg(method, payload) {
-  const res = await fetch(`${TELEGRAM_API}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  return res.json();
+if (!TELEGRAM_TOKEN || !GAS_URL) {
+  console.error('❌ ENV variables TELEGRAM_TOKEN or GAS_URL are missing');
+  process.exit(1);
 }
 
+// ======================
+// Telegram helper
+// ======================
 async function sendMessage(chatId, text, keyboard = null) {
   const payload = {
     chat_id: chatId,
     text,
     parse_mode: 'HTML',
-    disable_web_page_preview: true
+    disable_web_page_preview: true,
   };
+
   if (keyboard) payload.reply_markup = keyboard;
-  await tg('sendMessage', payload);
+
+  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
 }
 
-function mainKeyboard() {
-  return {
-    keyboard: [
-      [{ text: '📊 Отчёт за дату' }, { text: '📅 Период (отчёт)' }],
-      [{ text: '💰 Поступления на дату' }],
-      [{ text: 'ℹ️ Помощь' }]
-    ],
-    resize_keyboard: true
-  };
-}
+// ======================
+// Keyboard
+// ======================
+const mainKeyboard = {
+  keyboard: [
+    [{ text: '📊 Отчёт за дату' }, { text: '📅 Период (отчёт)' }],
+    [{ text: '💰 Поступления на дату' }],
+    [{ text: 'ℹ️ Помощь' }],
+  ],
+  resize_keyboard: true,
+};
 
-function isAllowed(userId) {
-  return ALLOWED_USERS.includes(String(userId));
-}
-
+// ======================
+// Call GAS
+// ======================
 async function callGAS(payload) {
   const res = await fetch(GAS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   return res.json();
 }
 
-// ================== WEBHOOK ==================
+// ======================
+// STATE (in-memory, ok for reports)
+// ======================
+const userState = {};
+
+// ======================
+// WEBHOOK
+// ======================
 app.post('/telegram', async (req, res) => {
+  res.send('OK');
+
+  const msg = req.body.message;
+  if (!msg) return;
+
+  const chatId = msg.chat.id;
+  const text   = (msg.text || '').trim();
+
+  console.log('📩', chatId, text);
+
+  // /start
+  if (text === '/start') {
+    userState[chatId] = null;
+    await sendMessage(
+      chatId,
+      '✅ <b>Aromat CashFlow</b>\n\nБот работает через <b>Node.js + Google Apps Script</b>.\nВыбери команду 👇',
+      mainKeyboard
+    );
+    return;
+  }
+
+  // Buttons
+  if (text.includes('Отчёт за дату')) {
+    userState[chatId] = 'WAIT_REPORT_DAY';
+    await sendMessage(chatId, 'Введите дату: <code>YYYY-MM-DD</code>');
+    return;
+  }
+
+  if (text.includes('Период')) {
+    userState[chatId] = 'WAIT_REPORT_RANGE';
+    await sendMessage(chatId, 'Введите период:\n<code>YYYY-MM-DD YYYY-MM-DD</code>');
+    return;
+  }
+
+  if (text.includes('Поступления')) {
+    userState[chatId] = 'WAIT_PAYOUT_DAY';
+    await sendMessage(chatId, 'Введите дату поступлений: <code>YYYY-MM-DD</code>');
+    return;
+  }
+
+  if (text.includes('Помощь')) {
+    await sendMessage(
+      chatId,
+      'ℹ️ <b>Команды</b>\n\n' +
+      '📊 Отчёт за дату — продажи за день\n' +
+      '📅 Период — отчёт за период\n' +
+      '💰 Поступления — выплаты по дате'
+    );
+    return;
+  }
+
+  // ======================
+  // DATE INPUT
+  // ======================
+  const state = userState[chatId];
+
   try {
-    const msg = req.body.message;
-    if (!msg) return res.sendStatus(200);
-
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const text = (msg.text || '').trim();
-
-    if (!isAllowed(userId)) {
-      await sendMessage(chatId, '⛔ Нет доступа');
-      return res.sendStatus(200);
-    }
-
-    userState[chatId] ||= {};
-
-    // ---------- START ----------
-    if (text === '/start') {
-      await sendMessage(
-        chatId,
-        '✅ <b>Aromat CashFlow</b>\n\n' +
-        'Бот работает через Node.js + Google Apps Script.\n' +
-        'Выбери действие:',
-        mainKeyboard()
-      );
-      return res.sendStatus(200);
-    }
-
-    // ---------- HELP ----------
-    if (text.toLowerCase().includes('помощ')) {
-      await sendMessage(
-        chatId,
-        'ℹ️ <b>Помощь</b>\n\n' +
-        '• 📊 Отчёт за дату — продажи за день\n' +
-        '• 📅 Период — отчёт за период\n' +
-        '• 💰 Поступления — выплаты на дату\n\n' +
-        'Формат дат: <code>YYYY-MM-DD</code>',
-        mainKeyboard()
-      );
-      return res.sendStatus(200);
-    }
-
-    // ---------- COMMANDS ----------
-    if (text.includes('Отчёт за дату')) {
-      userState[chatId].mode = 'REPORT_DAY';
-      await sendMessage(chatId, 'Введите дату: <code>YYYY-MM-DD</code>');
-      return res.sendStatus(200);
-    }
-
-    if (text.includes('Период')) {
-      userState[chatId].mode = 'REPORT_RANGE';
-      await sendMessage(chatId, 'Введите период:\n<code>YYYY-MM-DD YYYY-MM-DD</code>');
-      return res.sendStatus(200);
-    }
-
-    if (text.includes('Поступления')) {
-      userState[chatId].mode = 'PAYOUT_DAY';
-      await sendMessage(chatId, 'Введите дату поступлений:\n<code>YYYY-MM-DD</code>');
-      return res.sendStatus(200);
-    }
-
-    // ---------- STATE HANDLING ----------
-    const mode = userState[chatId].mode;
-
-    if (mode === 'REPORT_DAY') {
-      userState[chatId].mode = null;
+    if (state === 'WAIT_REPORT_DAY') {
+      userState[chatId] = null;
       const r = await callGAS({ action: 'report_day', date: text });
-      await sendMessage(chatId, r.text || '❌ Ошибка');
-      return res.sendStatus(200);
+      await sendMessage(chatId, r.text, mainKeyboard);
+      return;
     }
 
-    if (mode === 'REPORT_RANGE') {
-      userState[chatId].mode = null;
+    if (state === 'WAIT_PAYOUT_DAY') {
+      userState[chatId] = null;
+      const r = await callGAS({ action: 'payout_day', date: text });
+      await sendMessage(chatId, r.text, mainKeyboard);
+      return;
+    }
+
+    if (state === 'WAIT_REPORT_RANGE') {
+      userState[chatId] = null;
       const [from, to] = text.split(' ');
       const r = await callGAS({ action: 'report_range', from, to });
-      await sendMessage(chatId, r.text || '❌ Ошибка');
-      return res.sendStatus(200);
+      await sendMessage(chatId, r.text, mainKeyboard);
+      return;
     }
 
-    if (mode === 'PAYOUT_DAY') {
-      userState[chatId].mode = null;
-      const r = await callGAS({ action: 'payout_day', date: text });
-      await sendMessage(chatId, r.text || '❌ Ошибка');
-      return res.sendStatus(200);
-    }
-
-    await sendMessage(chatId, 'Выберите команду 👇', mainKeyboard());
-    res.sendStatus(200);
-
-  } catch (err) {
-    console.error(err);
-    res.sendStatus(200);
+  } catch (e) {
+    console.error(e);
+    await sendMessage(chatId, '❌ Ошибка обработки данных');
   }
+
+  await sendMessage(chatId, 'Выбери команду 👇', mainKeyboard);
 });
 
-// ================== HEALTH ==================
-app.get('/', (_, res) => {
-  res.send('✅ Telegram bot is running');
-});
+// ======================
+// HEALTH
+// ======================
+app.get('/', (_, res) => res.send('OK'));
 
-// ================== START ==================
+// ======================
+// START
+// ======================
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 Server started on port ${PORT}`);
 });
