@@ -4,166 +4,141 @@ import fetch from 'node-fetch';
 const app = express();
 app.use(express.json());
 
-// ======================
-// ENV
-// ======================
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const GAS_URL        = process.env.GAS_URL;
+/* ================== НАСТРОЙКИ ================== */
 
-if (!TELEGRAM_TOKEN || !GAS_URL) {
-  console.error('❌ ENV variables TELEGRAM_TOKEN or GAS_URL are missing');
-  process.exit(1);
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const GAS_URL = process.env.GAS_URL; 
+// пример: https://script.google.com/macros/s/XXXXX/exec
+
+const TG_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
+
+/* ================== HELPERS ================== */
+
+function today(offset = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return d.toISOString().slice(0, 10);
 }
 
-// ======================
-// Telegram helper
-// ======================
-async function sendMessage(chatId, text, keyboard = null) {
-  const payload = {
+async function tgSend(chatId, text, keyboard = null) {
+  const body = {
     chat_id: chatId,
     text,
-    parse_mode: 'HTML',
-    disable_web_page_preview: true,
+    parse_mode: 'HTML'
   };
+  if (keyboard) body.reply_markup = keyboard;
 
-  if (keyboard) payload.reply_markup = keyboard;
-
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+  await fetch(`${TG_API}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body)
   });
 }
 
-// ======================
-// Keyboard
-// ======================
-const mainKeyboard = {
-  keyboard: [
-    [{ text: '📊 Отчёт за дату' }, { text: '📅 Период (отчёт)' }],
-    [{ text: '💰 Поступления на дату' }],
-    [{ text: 'ℹ️ Помощь' }],
-  ],
-  resize_keyboard: true,
-};
+function mainKeyboard() {
+  return {
+    keyboard: [
+      [{ text: '📊 Отчёт сегодня' }, { text: '📊 Отчёт вчера' }],
+      [{ text: '💰 Поступления сегодня' }, { text: '💰 Поступления завтра' }],
+      [{ text: '📅 Отчёт за 7 дней' }],
+      [{ text: 'ℹ️ Помощь' }]
+    ],
+    resize_keyboard: true
+  };
+}
 
-// ======================
-// Call GAS
-// ======================
-async function callGAS(payload) {
+async function gas(action, payload = {}) {
   const res = await fetch(GAS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ action, ...payload })
   });
-  return res.json();
+  const json = await res.json();
+  return json.text || '❌ Нет ответа от GAS';
 }
 
-// ======================
-// STATE (in-memory, ok for reports)
-// ======================
-const userState = {};
+/* ================== WEBHOOK ================== */
 
-// ======================
-// WEBHOOK
-// ======================
 app.post('/telegram', async (req, res) => {
-  res.send('OK');
-
-  const msg = req.body.message;
-  if (!msg) return;
-
-  const chatId = msg.chat.id;
-  const text   = (msg.text || '').trim();
-
-  console.log('📩', chatId, text);
-
-  // /start
-  if (text === '/start') {
-    userState[chatId] = null;
-    await sendMessage(
-      chatId,
-      '✅ <b>Aromat CashFlow</b>\n\nБот работает через <b>Node.js + Google Apps Script</b>.\nВыбери команду 👇',
-      mainKeyboard
-    );
-    return;
-  }
-
-  // Buttons
-  if (text.includes('Отчёт за дату')) {
-    userState[chatId] = 'WAIT_REPORT_DAY';
-    await sendMessage(chatId, 'Введите дату: <code>YYYY-MM-DD</code>');
-    return;
-  }
-
-  if (text.includes('Период')) {
-    userState[chatId] = 'WAIT_REPORT_RANGE';
-    await sendMessage(chatId, 'Введите период:\n<code>YYYY-MM-DD YYYY-MM-DD</code>');
-    return;
-  }
-
-  if (text.includes('Поступления')) {
-    userState[chatId] = 'WAIT_PAYOUT_DAY';
-    await sendMessage(chatId, 'Введите дату поступлений: <code>YYYY-MM-DD</code>');
-    return;
-  }
-
-  if (text.includes('Помощь')) {
-    await sendMessage(
-      chatId,
-      'ℹ️ <b>Команды</b>\n\n' +
-      '📊 Отчёт за дату — продажи за день\n' +
-      '📅 Период — отчёт за период\n' +
-      '💰 Поступления — выплаты по дате'
-    );
-    return;
-  }
-
-  // ======================
-  // DATE INPUT
-  // ======================
-  const state = userState[chatId];
-
   try {
-    if (state === 'WAIT_REPORT_DAY') {
-      userState[chatId] = null;
-      const r = await callGAS({ action: 'report_day', date: text });
-      await sendMessage(chatId, r.text, mainKeyboard);
-      return;
+    const msg = req.body.message;
+    if (!msg || !msg.text) return res.sendStatus(200);
+
+    const chatId = msg.chat.id;
+    const text = msg.text;
+
+    // START
+    if (text === '/start') {
+      await tgSend(
+        chatId,
+        '✅ <b>Aromat CashFlow</b>\n\nВыбери команду 👇',
+        mainKeyboard()
+      );
+      return res.sendStatus(200);
     }
 
-    if (state === 'WAIT_PAYOUT_DAY') {
-      userState[chatId] = null;
-      const r = await callGAS({ action: 'payout_day', date: text });
-      await sendMessage(chatId, r.text, mainKeyboard);
-      return;
+    // 📊 Сегодня
+    if (text.includes('Отчёт сегодня')) {
+      const d = today(0);
+      const reply = await gas('report_day', { date: d });
+      await tgSend(chatId, reply, mainKeyboard());
     }
 
-    if (state === 'WAIT_REPORT_RANGE') {
-      userState[chatId] = null;
-      const [from, to] = text.split(' ');
-      const r = await callGAS({ action: 'report_range', from, to });
-      await sendMessage(chatId, r.text, mainKeyboard);
-      return;
+    // 📊 Вчера
+    else if (text.includes('Отчёт вчера')) {
+      const d = today(-1);
+      const reply = await gas('report_day', { date: d });
+      await tgSend(chatId, reply, mainKeyboard());
     }
 
+    // 💰 Сегодня
+    else if (text.includes('Поступления сегодня')) {
+      const d = today(0);
+      const reply = await gas('payout_day', { date: d });
+      await tgSend(chatId, reply, mainKeyboard());
+    }
+
+    // 💰 Завтра
+    else if (text.includes('Поступления завтра')) {
+      const d = today(1);
+      const reply = await gas('payout_day', { date: d });
+      await tgSend(chatId, reply, mainKeyboard());
+    }
+
+    // 📅 7 дней
+    else if (text.includes('7 дней')) {
+      const to = today(0);
+      const from = today(-6);
+      const reply = await gas('report_range', { from, to });
+      await tgSend(chatId, reply, mainKeyboard());
+    }
+
+    // ℹ️ HELP
+    else if (text.includes('Помощ')) {
+      await tgSend(
+        chatId,
+        'ℹ️ <b>Команды</b>\n\n' +
+        '📊 Отчёты — продажи\n' +
+        '💰 Поступления — выплаты\n\n' +
+        'Данные берутся из Google Sheets',
+        mainKeyboard()
+      );
+    }
+
+    else {
+      await tgSend(chatId, 'Выбери команду 👇', mainKeyboard());
+    }
+
+    res.sendStatus(200);
   } catch (e) {
     console.error(e);
-    await sendMessage(chatId, '❌ Ошибка обработки данных');
+    res.sendStatus(200);
   }
-
-  await sendMessage(chatId, 'Выбери команду 👇', mainKeyboard);
 });
 
-// ======================
-// HEALTH
-// ======================
-app.get('/', (_, res) => res.send('OK'));
+/* ================== START ================== */
 
-// ======================
-// START
-// ======================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server started on port ${PORT}`);
+  console.log('🚀 Bot started on', PORT);
 });
