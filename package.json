@@ -2,7 +2,6 @@
   "name": "molecule-webhook",
   "version": "1.0.0",
   "type": "module",
-  "private": true,
   "engines": {
     "node": ">=18"
   },
@@ -11,6 +10,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
+    "node-fetch": "^3.3.2",
     "googleapis": "^144.0.0"
   }
 }
