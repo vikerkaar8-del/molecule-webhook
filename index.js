@@ -1,30 +1,19 @@
-/****************************************************
- * Aromat CashFlow — Render Webhook (HYBRID)
- * Node.js = UX + menu + state
- * Google Apps Script = calculations
- ****************************************************/
-
 import express from 'express';
 import fetch from 'node-fetch';
 
 const app = express();
 app.use(express.json());
 
-/* ================== CONFIG ================== */
-const PORT = process.env.PORT || 3000;
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const TOKEN = process.env.TELEGRAM_TOKEN;
 const GAS_URL = process.env.GAS_URL;
 
-const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
-const ALLOWED_USERS = ['1356353979', '499185572'];
+const TG_API = `https://api.telegram.org/bot${TOKEN}`;
+const userState = new Map();
 
-/* ================== STATE ================== */
-const userState = new Map(); 
-// chatId => { mode: 'WAIT_DATE_REPORT' | 'WAIT_DATE_RECALC' }
+/* ---------- helpers ---------- */
 
-/* ================== HELPERS ================== */
 async function tg(method, payload) {
-  await fetch(`${TELEGRAM_API}/${method}`, {
+  await fetch(`${TG_API}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -38,164 +27,143 @@ function keyboard() {
       [{ text: '🔄 Пересчитать день' }],
       [{ text: 'ℹ️ Помощь' }]
     ],
-    resize_keyboard: true,
-    one_time_keyboard: false
+    resize_keyboard: true
   };
 }
 
-function isAllowed(id) {
-  return ALLOWED_USERS.includes(String(id));
-}
-
-function isDate(text) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(text);
-}
-
-/* ================== GOOGLE APPS SCRIPT ================== */
-async function callGAS(action, payload) {
-  const res = await fetch(GAS_URL, {
+async function callGAS(body) {
+  const r = await fetch(GAS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, ...payload })
+    body: JSON.stringify(body)
   });
-  return res.json();
+  return r.json();
 }
 
-/* ================== WEBHOOK ================== */
-app.post('/telegram', async (req, res) => {
+function isDate(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+/* ---------- webhook ---------- */
+
+app.post('/webhook', async (req, res) => {
+  res.send('OK');
+
   const msg = req.body.message;
-  if (!msg) return res.sendStatus(200);
+  if (!msg || !msg.text) return;
 
   const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const text = (msg.text || '').trim();
+  const text = msg.text.trim();
 
-  if (!isAllowed(userId)) {
-    await tg('sendMessage', {
-      chat_id: chatId,
-      text: '⛔ Нет доступа'
-    });
-    return res.sendStatus(200);
-  }
-
-  /* ===== /start ===== */
+  /* ----- START ----- */
   if (text === '/start') {
     userState.delete(chatId);
     await tg('sendMessage', {
       chat_id: chatId,
-      text:
-        '✅ <b>Aromat CashFlow</b>\n\n' +
-        'Бот работает через Render + Google Sheets.\n' +
-        'Выбери команду 👇',
+      text: '✅ <b>Aromat CashFlow</b>\nВыбери команду 👇',
       parse_mode: 'HTML',
       reply_markup: keyboard()
     });
-    return res.sendStatus(200);
+    return;
   }
 
-  /* ===== HELP ===== */
-  if (text.includes('Помощ')) {
-    await tg('sendMessage', {
-      chat_id: chatId,
-      text:
-        'ℹ️ <b>Команды</b>\n\n' +
-        '📊 Отчёт за дату — продажи за день\n' +
-        '💰 Поступления — выплаты по PayoutPlan\n' +
-        '🔄 Пересчитать день — пересобрать данные\n\n' +
-        'После команды просто введи дату: <code>YYYY-MM-DD</code>',
-      parse_mode: 'HTML',
-      reply_markup: keyboard()
-    });
-    return res.sendStatus(200);
-  }
-
-  /* ===== MENU COMMANDS ===== */
-  if (text === '📊 Отчёт за дату') {
-    userState.set(chatId, { mode: 'WAIT_REPORT_DATE' });
+  /* ----- BUTTONS ----- */
+  if (text.includes('Отчёт за дату')) {
+    userState.set(chatId, { mode: 'REPORT_DAY' });
     await tg('sendMessage', {
       chat_id: chatId,
       text: 'Введите дату: <code>YYYY-MM-DD</code>',
       parse_mode: 'HTML'
     });
-    return res.sendStatus(200);
+    return;
   }
 
-  if (text === '💰 Поступления на дату') {
-    userState.set(chatId, { mode: 'WAIT_PAYOUT_DATE' });
-    await tg('sendMessage', {
-      chat_id: chatId,
-      text: 'Введите дату поступлений: <code>YYYY-MM-DD</code>',
-      parse_mode: 'HTML'
-    });
-    return res.sendStatus(200);
-  }
-
-  if (text === '🔄 Пересчитать день') {
-    userState.set(chatId, { mode: 'WAIT_RECALC_DATE' });
+  if (text.includes('Пересчитать день')) {
+    userState.set(chatId, { mode: 'RECALC_DAY' });
     await tg('sendMessage', {
       chat_id: chatId,
       text: 'Введите дату для пересчёта: <code>YYYY-MM-DD</code>',
       parse_mode: 'HTML'
     });
-    return res.sendStatus(200);
+    return;
   }
 
-  /* ===== DATE INPUT ===== */
+  if (text.includes('Поступления')) {
+    userState.set(chatId, { mode: 'PAYOUT_DAY' });
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Введите дату поступлений: <code>YYYY-MM-DD</code>',
+      parse_mode: 'HTML'
+    });
+    return;
+  }
+
+  if (text.includes('Помощ')) {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text:
+        'ℹ️ <b>Помощь</b>\n\n' +
+        '• 📊 Отчёт за дату — данные из DailySales\n' +
+        '• 🔄 Пересчитать день — пересбор данных\n' +
+        '• 💰 Поступления — из PayoutPlan',
+      parse_mode: 'HTML',
+      reply_markup: keyboard()
+    });
+    return;
+  }
+
+  /* ----- DATE INPUT ----- */
   const state = userState.get(chatId);
+  if (!state) return;
 
-  if (state && isDate(text)) {
-    userState.delete(chatId);
-
-    if (state.mode === 'WAIT_REPORT_DATE') {
-      const data = await callGAS('dailyReport', { date: text });
-      await tg('sendMessage', {
-        chat_id: chatId,
-        text: data.text,
-        parse_mode: 'HTML',
-        reply_markup: keyboard()
-      });
-      return res.sendStatus(200);
-    }
-
-    if (state.mode === 'WAIT_PAYOUT_DATE') {
-      const data = await callGAS('payoutReport', { date: text });
-      await tg('sendMessage', {
-        chat_id: chatId,
-        text: data.text,
-        parse_mode: 'HTML',
-        reply_markup: keyboard()
-      });
-      return res.sendStatus(200);
-    }
-
-    if (state.mode === 'WAIT_RECALC_DATE') {
-      await callGAS('recalcDay', { date: text });
-      await tg('sendMessage', {
-        chat_id: chatId,
-        text: `✅ Пересчитано: <b>${text}</b>`,
-        parse_mode: 'HTML',
-        reply_markup: keyboard()
-      });
-      return res.sendStatus(200);
-    }
+  if (!isDate(text)) {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: '❌ Неверный формат даты. Пример: <code>2025-12-22</code>',
+      parse_mode: 'HTML'
+    });
+    return;
   }
 
-  /* ===== FALLBACK ===== */
-  await tg('sendMessage', {
-    chat_id: chatId,
-    text: 'Выбери команду 👇',
-    reply_markup: keyboard()
-  });
+  userState.delete(chatId);
 
-  res.sendStatus(200);
+  /* ----- ACTIONS ----- */
+
+  if (state.mode === 'RECALC_DAY') {
+    const r = await callGAS({ action: 'recalc_day', date: text });
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: r.text,
+      parse_mode: 'HTML',
+      reply_markup: keyboard()
+    });
+    return;
+  }
+
+  if (state.mode === 'REPORT_DAY') {
+    const r = await callGAS({ action: 'report_day', date: text });
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: r.text,
+      parse_mode: 'HTML',
+      reply_markup: keyboard()
+    });
+    return;
+  }
+
+  if (state.mode === 'PAYOUT_DAY') {
+    const r = await callGAS({ action: 'payout_day', date: text });
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: r.text,
+      parse_mode: 'HTML',
+      reply_markup: keyboard()
+    });
+    return;
+  }
 });
 
-/* ================== HEALTH ================== */
-app.get('/', (_, res) => {
-  res.send('✅ Aromat CashFlow webhook is running');
-});
+/* ---------- server ---------- */
 
-/* ================== START ================== */
-app.listen(PORT, () => {
-  console.log(`🚀 Server started on port ${PORT}`);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log('🚀 Bot started on', PORT));
