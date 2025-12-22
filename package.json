@@ -2,13 +2,15 @@
   "name": "molecule-webhook",
   "version": "1.0.0",
   "type": "module",
-  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
     "node-fetch": "^3.3.2",
-    "googleapis": "^144.0.0"
+    "googleapis": "^140.0.0"
   }
 }
