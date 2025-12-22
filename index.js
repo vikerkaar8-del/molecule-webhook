@@ -26,15 +26,8 @@ const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 const TELEGRAM_CHAT_ID = '1356353979';
 const ALLOWED_USERS = ['1356353979', '499185572'];
 
-// InSales
-const INS_API_KEY = process.env.INS_API_KEY;
-const INS_PASSWORD = process.env.INS_PASSWORD;
-const INS_DOMAIN = 'aromat.ee';
-const INS_PER_PAGE = 50;
-
-// ================== STATE (замена PropertiesService) ==================
-const chatModes = new Map();      // chatId → mode
-let recalcJob = null;             // single background job
+// ================== STATE ==================
+const chatModes = new Map(); // chatId → mode
 
 // ================== TELEGRAM ==================
 async function telegram(method, payload) {
@@ -102,7 +95,9 @@ async function handleMessage(msg) {
   const text = normalizeCmd(textRaw);
   const mode = chatModes.get(chatId);
 
+  // /start
   if (text === '/start') {
+    chatModes.delete(chatId);
     await sendTelegram(
       chatId,
       '✅ <b>Aromat CashFlow</b>\n\nСчитаем только <b>paid</b> заказы.',
@@ -111,34 +106,42 @@ async function handleMessage(msg) {
     return;
   }
 
+  // help
   if (text === 'help') {
+    chatModes.delete(chatId);
     await sendTelegram(chatId, buildHelpMessage(), mainKeyboard());
     return;
   }
 
+  // report
   if (text === 'report') {
     chatModes.set(chatId, 'WAIT_REPORT_DATE');
     await sendTelegram(chatId, 'Введи дату: <code>YYYY-MM-DD</code>', mainKeyboard());
     return;
   }
 
+  // ожидание даты отчёта
   if (mode === 'WAIT_REPORT_DATE') {
     chatModes.delete(chatId);
     const d = parseDate(textRaw);
     if (!d) {
-      await sendTelegram(chatId, '❌ Неверная дата', mainKeyboard());
+      await sendTelegram(chatId, '❌ Неверная дата. Пример: <code>2025-12-22</code>', mainKeyboard());
       return;
     }
     await sendTelegram(chatId, buildDailyReportStub(d), mainKeyboard());
     return;
   }
 
-  await sendTelegram(chatId, 'Выбери команду 👇', mainKeyboard());
+  await sendTelegram(chatId, 'Выбери команду кнопкой 👇', mainKeyboard());
 }
 
-// ================== COMMAND NORMALIZER ==================
+// ================== COMMAND NORMALIZER (🔥 FIX) ==================
 function normalizeCmd(t) {
-  const x = t.toLowerCase();
+  const x = String(t || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, '') // ❗ убираем emoji
+    .trim();
+
   if (x.includes('отч') && x.includes('дат')) return 'report';
   if (x.includes('период')) return 'range';
   if (x.includes('поступ')) return 'payout';
@@ -146,7 +149,8 @@ function normalizeCmd(t) {
   if (x.includes('пересчит')) return 'recalc';
   if (x.includes('очист')) return 'clear_range';
   if (x.includes('помощ')) return 'help';
-  if (x === '/start') return '/start';
+  if (x === 'start' || x === '/start') return '/start';
+
   return x;
 }
 
@@ -174,22 +178,7 @@ function fmtDate(d) {
   return dayjs(d).tz(TZ).format('YYYY-MM-DD');
 }
 
-function isWeekend(d) {
-  const day = d.getDay();
-  return day === 0 || day === 6;
-}
-
-function addBusinessDays(date, days) {
-  let d = dayjs(date);
-  let added = 0;
-  while (added < days) {
-    d = d.add(1, 'day');
-    if (!isWeekend(d.toDate())) added++;
-  }
-  return d.toDate();
-}
-
-// ================== REPORT STUB (дальше подключим Sheets) ==================
+// ================== REPORT STUB ==================
 function buildDailyReportStub(dateObj) {
   const d = fmtDate(dateObj);
   return (
@@ -201,5 +190,5 @@ function buildDailyReportStub(dateObj) {
 
 // ================== START SERVER ==================
 app.listen(PORT, () => {
-  console.log('Server started on port', PORT);
+  console.log('🚀 Server started on port', PORT);
 });
