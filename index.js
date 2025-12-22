@@ -1,6 +1,6 @@
 /****************************************************
- * Aromat CashFlow Bot — RENDER WEBHOOK
- * FULL PORT OF WORKING APPS SCRIPT
+ * Aromat CashFlow Bot — Render + Google Sheets
+ * READ ONLY (DailySales)
  ****************************************************/
 
 import express from 'express';
@@ -10,223 +10,136 @@ import { google } from 'googleapis';
 const app = express();
 app.use(express.json());
 
-/* ================= CONFIG ================= */
-
+// ================== CONFIG ==================
 const PORT = process.env.PORT || 10000;
-const TZ = 'Europe/Tallinn';
 
-// Telegram
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
-const ALLOWED_USERS = ['1356353979','499185572'];
 
-// InSales
-const INS_API_KEY  = process.env.INS_API_KEY;
-const INS_PASSWORD = process.env.INS_PASSWORD;
-const INS_DOMAIN   = 'aromat.ee';
-const INS_PER_PAGE = 50;
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const DAILY_SHEET = 'DailySales';
 
-// Sheets
-const SPREADSHEET_ID = '15S59Ms36TugiQAvxgLd5AX8urPVao5Quo0mnMvNt6aY';
-const SHEET_DAILY   = 'DailySales';
-const SHEET_PAYOUT  = 'PayoutPlan';
-const SHEET_HOLIDAY = 'BankHolidays';
+const ALLOWED_USERS = ['1356353979', '499185572'];
 
-// Payment titles
-const PAY = {
-  BANK1: 'Оплата через банки (EE, FI, LV, LT, PL, DE)',
-  BANK2: 'Оплата через банки (EE, LV, LT, PL, DE, BG, RO, SE, DK, CZ)',
-  CARD:  'Оплата картой',
-  PAYPAL:'Оплата через PayPal',
-  TRANSFER:'Банковский перевод'
-};
+// ================== GOOGLE AUTH ==================
+const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
 
-/* ================= GOOGLE ================= */
-
-const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
-  scopes: ['https://www.googleapis.com/auth/spreadsheets']
+const auth = new google.auth.JWT({
+  email: serviceAccount.client_email,
+  key: serviceAccount.private_key,
+  scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
 });
 
 const sheets = google.sheets({ version: 'v4', auth });
 
-/* ================= TELEGRAM ================= */
-
-async function tg(method, payload) {
-  await fetch(`${TELEGRAM_API}/${method}`, {
+// ================== HELPERS ==================
+async function telegram(method, payload) {
+  return fetch(`${TELEGRAM_API}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
 }
 
-function keyboard() {
+function isAllowed(id) {
+  return ALLOWED_USERS.includes(String(id));
+}
+
+async function sendMessage(chatId, text, keyboard = null) {
+  const payload = {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+  };
+  if (keyboard) payload.reply_markup = keyboard;
+  await telegram('sendMessage', payload);
+}
+
+function mainKeyboard() {
   return {
     keyboard: [
-      [{ text: '📊 Отчёт за дату' }, { text: '📅 Период (отчёт)' }],
-      [{ text: '💰 Поступления на дату' }, { text: '🔄 Пересчитать день' }],
-      [{ text: '🔁 Пересчитать период' }, { text: '🧹 Очистить период' }],
-      [{ text: 'ℹ️ Помощь' }]
+      [{ text: '📊 Отчёт за дату' }],
     ],
-    resize_keyboard: true
+    resize_keyboard: true,
   };
 }
 
-/* ================= HELPERS ================= */
-
-const fmt = d => d.toISOString().slice(0,10);
-const isWeekend = d => [0,6].includes(d.getDay());
-
-async function loadHolidays() {
-  const r = await sheets.spreadsheets.values.get({
+// ================== GOOGLE SHEETS ==================
+async function getDailyRow(dateStr) {
+  const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
-    range: `${SHEET_HOLIDAY}!A2:A`
+    range: `${DAILY_SHEET}!A2:H`,
   });
-  const set = {};
-  (r.data.values || []).forEach(([d]) => set[d] = true);
-  return set;
+
+  const rows = res.data.values || [];
+  return rows.find(r => r[0] === dateStr);
 }
 
-function isBusinessDay(d, hol) {
-  return !isWeekend(d) && !hol[fmt(d)];
-}
+// ================== WEBHOOK ==================
+app.post('/telegram', async (req, res) => {
+  try {
+    const msg = req.body.message;
+    if (!msg) return res.sendStatus(200);
 
-function nextBusinessDay(d, hol) {
-  const x = new Date(d);
-  while (!isBusinessDay(x, hol)) x.setDate(x.getDate()+1);
-  return x;
-}
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const text = (msg.text || '').trim();
 
-function addBusinessDays(d, n, hol) {
-  const x = new Date(d);
-  let i=0;
-  while (i<n) {
-    x.setDate(x.getDate()+1);
-    if (isBusinessDay(x, hol)) i++;
-  }
-  return x;
-}
-
-/* ================= INSALES ================= */
-
-async function fetchOrders(date) {
-  const from = new Date(date); from.setHours(0,0,0,0);
-  const to   = new Date(date); to.setHours(23,59,59,999);
-
-  const auth = Buffer.from(`${INS_API_KEY}:${INS_PASSWORD}`).toString('base64');
-  let page=1, out=[];
-
-  while (true) {
-    const r = await fetch(
-      `https://${INS_DOMAIN}/admin/orders.json?page=${page}&per_page=${INS_PER_PAGE}`,
-      { headers:{ Authorization:`Basic ${auth}` } }
-    );
-    const data = await r.json();
-    if (!data.length) break;
-
-    for (const o of data) {
-      const c = new Date(o.created_at);
-      if (c>=from && c<=to && (o.financial_status==='paid' || o.paid)) out.push(o);
+    if (!isAllowed(userId)) {
+      await sendMessage(chatId, '⛔ Нет доступа');
+      return res.sendStatus(200);
     }
-    if (new Date(data[data.length-1].created_at) < from) break;
-    page++;
+
+    if (text === '/start') {
+      await sendMessage(
+        chatId,
+        '✅ <b>Aromat CashFlow</b>\nGoogle Sheets подключены.',
+        mainKeyboard()
+      );
+      return res.sendStatus(200);
+    }
+
+    if (text.includes('Отчёт')) {
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      const dateStr = today.toISOString().slice(0,10);
+
+      const row = await getDailyRow(dateStr);
+
+      if (!row) {
+        await sendMessage(chatId, `❌ Нет данных за ${dateStr}`);
+        return res.sendStatus(200);
+      }
+
+      const msgText =
+        `📊 <b>Отчёт за ${dateStr}</b>\n\n` +
+        `🏦 Банки 1: <b>${row[1]} €</b>\n` +
+        `🏦 Банки 2: <b>${row[2]} €</b>\n` +
+        `💳 Карта: <b>${row[3]} €</b>\n` +
+        `🅿️ PayPal: <b>${row[4]} €</b>\n` +
+        `🏛 Перевод: <b>${row[5]} €</b>\n\n` +
+        `💶 <b>Итого: ${row[6]} €</b>\n` +
+        `📦 Заказов: <b>${row[7]}</b>`;
+
+      await sendMessage(chatId, msgText, mainKeyboard());
+      return res.sendStatus(200);
+    }
+
+    await sendMessage(chatId, 'Выбери команду 👇', mainKeyboard());
+    res.sendStatus(200);
+
+  } catch (e) {
+    console.error(e);
+    res.sendStatus(200);
   }
-  return out;
-}
-
-/* ================= CORE LOGIC ================= */
-
-async function recalcDay(date) {
-  const orders = await fetchOrders(date);
-  const hol = await loadHolidays();
-
-  const sums = { bank1:0, bank2:0, card:0, paypal:0, transfer:0 };
-  const cnt  = { bank1:0, bank2:0, card:0, paypal:0, transfer:0 };
-
-  for (const o of orders) {
-    const t = o.payment_title;
-    const a = Number(o.total_price||0);
-    if (t===PAY.BANK1)  { sums.bank1+=a; cnt.bank1++; }
-    if (t===PAY.BANK2)  { sums.bank2+=a; cnt.bank2++; }
-    if (t===PAY.CARD)   { sums.card+=a;  cnt.card++; }
-    if (t===PAY.PAYPAL) { sums.paypal+=a;cnt.paypal++; }
-    if (t===PAY.TRANSFER){sums.transfer+=a;cnt.transfer++; }
-  }
-
-  const row = [
-    fmt(date),
-    sums.bank1,
-    sums.bank2,
-    sums.card,
-    sums.paypal,
-    sums.transfer,
-    sums.bank1+sums.bank2+sums.card+sums.paypal+sums.transfer,
-    orders.length,
-    'EUR',
-    'paid only'
-  ];
-
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `${SHEET_DAILY}!A:J`,
-    valueInputOption:'USER_ENTERED',
-    requestBody:{ values:[row] }
-  });
-
-  const payouts = [];
-  if (sums.bank1)
-    payouts.push([fmt(nextBusinessDay(date,hol)), PAY.BANK1, sums.bank1, fmt(date), cnt.bank1]);
-  if (sums.bank2)
-    payouts.push([fmt(nextBusinessDay(date,hol)), PAY.BANK2, sums.bank2, fmt(date), cnt.bank2]);
-  if (sums.card)
-    payouts.push([fmt(addBusinessDays(nextBusinessDay(date,hol),3,hol)), PAY.CARD, sums.card, fmt(date), cnt.card]);
-  if (sums.paypal)
-    payouts.push([fmt(nextBusinessDay(date,hol)), PAY.PAYPAL, sums.paypal, fmt(date), cnt.paypal]);
-  if (sums.transfer)
-    payouts.push([fmt(nextBusinessDay(date,hol)), PAY.TRANSFER, sums.transfer, fmt(date), cnt.transfer]);
-
-  if (payouts.length) {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_PAYOUT}!A:E`,
-      valueInputOption:'USER_ENTERED',
-      requestBody:{ values:payouts }
-    });
-  }
-}
-
-/* ================= WEBHOOK ================= */
-
-app.post('/telegram', async (req,res)=>{
-  const msg = req.body.message;
-  if (!msg) return res.sendStatus(200);
-
-  if (!ALLOWED_USERS.includes(String(msg.from.id))) {
-    await tg('sendMessage',{ chat_id:msg.chat.id, text:'⛔ Нет доступа' });
-    return res.sendStatus(200);
-  }
-
-  if (msg.text?.includes('Пересчитать день')) {
-    await tg('sendMessage',{
-      chat_id:msg.chat.id,
-      text:'Введите дату YYYY-MM-DD'
-    });
-    return res.sendStatus(200);
-  }
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(msg.text)) {
-    await recalcDay(new Date(msg.text));
-    await tg('sendMessage',{
-      chat_id:msg.chat.id,
-      text:`✅ Пересчитано ${msg.text}`,
-      reply_markup:keyboard()
-    });
-  }
-
-  res.sendStatus(200);
 });
 
-/* ================= START ================= */
+// ================== HEALTH ==================
+app.get('/', (_, res) => {
+  res.send('✅ Aromat CashFlow webhook running');
+});
 
-app.get('/',(_,res)=>res.send('OK'));
-app.listen(PORT,()=>console.log('Server started on port',PORT));
+// ================== START ==================
+app.listen(PORT, () => {
+  console.log(`🚀 Server started on port ${PORT}`);
+});
