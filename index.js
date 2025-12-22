@@ -1,142 +1,259 @@
+/****************************************************
+ * Aromat CashFlow Bot — Render + Google Sheets
+ * ✅ recalcDay (порт из Apps Script)
+ ****************************************************/
+
 import express from 'express';
 import fetch from 'node-fetch';
 import { google } from 'googleapis';
 
-/* ================== CONFIG ================== */
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
-const TZ = 'Europe/Tallinn';
+// ================== CONFIG ==================
+const PORT = process.env.PORT || 3000;
 
+// Telegram
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 const ALLOWED_USERS = ['1356353979', '499185572'];
 
-const INS_API_KEY = process.env.INS_API_KEY;
+// InSales
+const INS_API_KEY  = process.env.INS_API_KEY;
 const INS_PASSWORD = process.env.INS_PASSWORD;
-const INS_DOMAIN = 'aromat.ee';
+const INS_DOMAIN   = 'aromat.ee';
+const INS_PER_PAGE = 50;
 
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+// Google Sheets
+const SPREADSHEET_ID = '15S59Ms36TugiQAvxgLd5AX8urPVao5Quo0mnMvNt6aY';
+const SHEET_DAILY_SALES = 'DailySales';
 
-/* ================== GOOGLE ================== */
-const auth = new google.auth.JWT({
-  email: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON).client_email,
-  key: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON).private_key,
-  scopes: ['https://www.googleapis.com/auth/spreadsheets']
-});
+// ================== GOOGLE AUTH ==================
+const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+
+const auth = new google.auth.JWT(
+  serviceAccount.client_email,
+  null,
+  serviceAccount.private_key,
+  ['https://www.googleapis.com/auth/spreadsheets']
+);
+
 const sheets = google.sheets({ version: 'v4', auth });
 
-/* ================== HELPERS ================== */
-const fmt = d => new Date(d).toISOString().slice(0,10);
-
-async function tg(method, payload) {
-  await fetch(`${TELEGRAM_API}/${method}`, {
+// ================== HELPERS ==================
+async function telegram(method, payload) {
+  const res = await fetch(`${TELEGRAM_API}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
+  return res.json();
 }
 
-async function send(chatId, text) {
-  await tg('sendMessage', {
+async function sendMessage(chatId, text, keyboard = null) {
+  const payload = {
     chat_id: chatId,
     text,
     parse_mode: 'HTML'
-  });
+  };
+  if (keyboard) payload.reply_markup = keyboard;
+  await telegram('sendMessage', payload);
 }
 
-function allowed(id){ return ALLOWED_USERS.includes(String(id)); }
-
-/* ================== SHEETS ================== */
-async function getSheet(name){
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: name
-  });
-  return res.data.values || [];
+function mainKeyboard() {
+  return {
+    keyboard: [
+      [{ text: '📊 Отчёт за дату' }],
+      [{ text: '🔄 Пересчитать день' }],
+      [{ text: 'ℹ️ Помощь' }]
+    ],
+    resize_keyboard: true
+  };
 }
 
-/* ================== REPORT ================== */
-async function reportByDate(date){
-  const rows = await getSheet('DailySales');
-  const r = rows.find(x => x[0] === date);
-  if (!r) return `❌ Нет данных за ${date}`;
+function isAllowed(userId) {
+  return ALLOWED_USERS.includes(String(userId));
+}
 
+function fmtDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+// ================== INS SALES ==================
+async function fetchOrdersForDate(dateStr) {
+  const dayStart = new Date(`${dateStr}T00:00:00Z`);
+  const dayEnd   = new Date(`${dateStr}T23:59:59Z`);
+
+  const authHeader =
+    'Basic ' + Buffer.from(`${INS_API_KEY}:${INS_PASSWORD}`).toString('base64');
+
+  let page = 1;
+  let all = [];
+
+  while (true) {
+    const url =
+      `https://${INS_DOMAIN}/admin/orders.json?per_page=${INS_PER_PAGE}&page=${page}&order=created_at+desc`;
+
+    const res = await fetch(url, {
+      headers: { Authorization: authHeader }
+    });
+
+    const data = await res.json();
+    if (!data.length) break;
+
+    for (const o of data) {
+      const created = new Date(o.created_at);
+      if (created >= dayStart && created <= dayEnd) {
+        if (isPaidOrder(o)) all.push(o);
+      }
+    }
+
+    const lastCreated = new Date(data[data.length - 1].created_at);
+    if (lastCreated < dayStart) break;
+
+    page++;
+    if (page > 200) break;
+  }
+
+  return all;
+}
+
+function isPaidOrder(o) {
   return (
-`📊 <b>Отчёт за ${date}</b>
-
-🏦 Банки 1: <b>${r[1]} €</b>
-🏦 Банки 2: <b>${r[2]} €</b>
-💳 Карта: <b>${r[3]} €</b>
-🅿️ PayPal: <b>${r[4]} €</b>
-🏛 Перевод: <b>${r[5]} €</b>
-
-💶 <b>Итого: ${r[6]} €</b>
-📦 Заказов: ${r[7]}`
+    o.financial_status === 'paid' ||
+    o.paid === true ||
+    o.paid_at
   );
 }
 
-async function payoutByDate(date){
-  const rows = await getSheet('PayoutPlan');
-  const list = rows.filter(r => r[0] === date);
-  if (!list.length) return `❌ Нет поступлений на ${date}`;
-
-  let total = 0;
-  let text = `💰 <b>Поступления на ${date}</b>\n\n`;
-  list.forEach(r=>{
-    total += Number(r[2]||0);
-    text += `• ${r[1]}: <b>${r[2]} €</b>\n`;
-  });
-  text += `\n💶 <b>Итого: ${total.toFixed(2)} €</b>`;
-  return text;
+function paymentTitle(o) {
+  return (
+    o.payment_title ||
+    o.payment_method?.title ||
+    o.payment_gateway ||
+    '—'
+  );
 }
 
-/* ================== TELEGRAM ================== */
-app.post('/telegram', async (req,res)=>{
-  try{
+// ================== GOOGLE SHEETS ==================
+async function upsertDailySales(dateStr, sums, ordersCount) {
+  const range = `${SHEET_DAILY_SALES}!A2:I`;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range
+  });
+
+  const rows = res.data.values || [];
+  let rowIndex = rows.findIndex(r => r[0] === dateStr);
+
+  const row = [
+    dateStr,
+    sums.banks_1,
+    sums.banks_2,
+    sums.card,
+    sums.paypal,
+    sums.transfer,
+    sums.total,
+    ordersCount,
+    'EUR'
+  ];
+
+  if (rowIndex === -1) {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_DAILY_SALES}!A:I`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [row] }
+    });
+  } else {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_DAILY_SALES}!A${rowIndex + 2}:I${rowIndex + 2}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [row] }
+    });
+  }
+}
+
+// ================== 🔄 RECALC DAY ==================
+async function recalcDay(dateStr) {
+  const orders = await fetchOrdersForDate(dateStr);
+
+  const sums = {
+    banks_1: 0,
+    banks_2: 0,
+    card: 0,
+    paypal: 0,
+    transfer: 0,
+    total: 0
+  };
+
+  for (const o of orders) {
+    const amount = Number(o.total_price || 0);
+    sums.total += amount;
+
+    const pay = paymentTitle(o);
+
+    if (pay.includes('банки') && pay.includes('EE')) sums.banks_1 += amount;
+    else if (pay.includes('банки')) sums.banks_2 += amount;
+    else if (pay.includes('карт')) sums.card += amount;
+    else if (pay.includes('PayPal')) sums.paypal += amount;
+    else if (pay.includes('перевод')) sums.transfer += amount;
+  }
+
+  await upsertDailySales(dateStr, sums, orders.length);
+}
+
+// ================== WEBHOOK ==================
+app.post('/telegram', async (req, res) => {
+  try {
     const msg = req.body.message;
-    if(!msg) return res.sendStatus(200);
+    if (!msg) return res.sendStatus(200);
 
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-    const text = (msg.text||'').trim();
+    const text = (msg.text || '').trim();
 
-    if(!allowed(userId)){
-      await send(chatId,'⛔ Нет доступа');
+    if (!isAllowed(userId)) {
+      await sendMessage(chatId, '⛔ Нет доступа');
       return res.sendStatus(200);
     }
 
-    if(text === '/start'){
-      await send(chatId,'✅ <b>Aromat CashFlow</b>\nGoogle Sheets подключены.');
+    if (text === '/start') {
+      await sendMessage(
+        chatId,
+        '✅ <b>Aromat CashFlow</b>\nGoogle Sheets подключены.',
+        mainKeyboard()
+      );
       return res.sendStatus(200);
     }
 
-    if(text.includes('Отчёт')){
-      await send(chatId,'Введи дату: YYYY-MM-DD');
+    if (text.includes('Пересчитать')) {
+      await sendMessage(chatId, 'Введите дату: YYYY-MM-DD');
       return res.sendStatus(200);
     }
 
-    if(/^\d{4}-\d{2}-\d{2}$/.test(text)){
-      await send(chatId, await reportByDate(text));
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      await recalcDay(text);
+      await sendMessage(chatId, `✅ Пересчитано: <b>${text}</b>`, mainKeyboard());
       return res.sendStatus(200);
     }
 
-    if(text.includes('Поступ')){
-      await send(chatId,'Введи дату поступлений: YYYY-MM-DD');
-      return res.sendStatus(200);
-    }
-
-    await send(chatId,'Выбери команду 👇');
+    await sendMessage(chatId, 'Выбери команду 👇', mainKeyboard());
     res.sendStatus(200);
 
-  }catch(e){
+  } catch (e) {
     console.error(e);
     res.sendStatus(200);
   }
 });
 
-/* ================== HEALTH ================== */
-app.get('/',(_,res)=>res.send('OK'));
+// ================== HEALTH ==================
+app.get('/', (_, res) => {
+  res.send('Aromat CashFlow webhook OK');
+});
 
-app.listen(PORT, ()=>console.log(`🚀 Server started on port ${PORT}`));
+// ================== START ==================
+app.listen(PORT, () => {
+  console.log(`🚀 Server started on port ${PORT}`);
+});
