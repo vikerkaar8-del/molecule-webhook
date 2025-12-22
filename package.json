@@ -1,16 +1,13 @@
 {
-  "name": "molecule-webhook",
+  "name": "aromat-cashflow-bot",
   "version": "1.0.0",
   "type": "module",
-  "engines": {
-    "node": ">=18"
-  },
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "node-fetch": "^3.3.2",
-    "googleapis": "^140.0.0"
+    "node-fetch": "^3.3.2"
   }
 }
