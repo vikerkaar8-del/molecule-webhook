@@ -7,7 +7,9 @@ app.use(express.json());
 
 app.post('/webhook', async (req, res) => {
   const message = req.body.message;
-  if (!message?.text) return res.sendStatus(200);
+  if (!message || !message.text) {
+    return res.sendStatus(200);
+  }
 
   const chatId = message.chat.id;
   const userText = message.text;
@@ -15,14 +17,18 @@ app.post('/webhook', async (req, res) => {
   try {
     const reply = await askGPT(userText);
     await sendMessage(chatId, reply);
-  } catch (e) {
-    await sendMessage(chatId, 'Что-то пошло не так 🙏 Сейчас уточню и помогу.');
+  } catch (err) {
+    console.error(err);
+    await sendMessage(
+      chatId,
+      'Что-то пошло не так 🙏 Я уже разбираюсь и скоро помогу.'
+    );
   }
 
   res.sendStatus(200);
 });
 
-app.get('/', (_, res) => {
+app.get('/', (req, res) => {
   res.send('Molecule Assistant is running');
 });
 
