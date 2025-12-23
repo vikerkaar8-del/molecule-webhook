@@ -5,76 +5,47 @@ const app = express();
 app.use(express.json());
 
 const TG_TOKEN = process.env.TG_TOKEN;
-const GAS_URL = "https://script.google.com/macros/s/AKfycbzH8rDFuECt4Bx3JjvAp15lVUZu5nZdv79y-FWUNSZwcLxMVv8uSk4BqxvVzb0hATROiA/exec";
-
-const TELEGRAM_API = `https://api.telegram.org/bot${TG_TOKEN}`;
+const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
 
 app.post("/telegram", async (req, res) => {
-  // 🔥 1. СРАЗУ отвечаем Telegram
-  res.sendStatus(200);
-
   try {
-    const msg = req.body.message;
-    if (!msg || !msg.text) return;
+    console.log("UPDATE:", JSON.stringify(req.body));
 
-    const chatId = msg.chat.id;
-    const text = msg.text.trim();
+    const message = req.body.message;
+    if (!message) {
+      return res.sendStatus(200);
+    }
 
-    // 👇 2. Всё остальное — уже ПОСЛЕ ответа
-    let action = null;
+    const chatId = message.chat.id;
+    const text = message.text || "";
+
+    let reply = "🤖 Я жив, но пока думаю…";
 
     if (text === "/start") {
-      await send(chatId, "✅ Aromat CashFlow готов к работе");
-      return;
+      reply = "✅ Aromat CashFlow онлайн\nНапиши что-нибудь.";
     }
 
-    if (text === "/today") action = "report_day";
-    if (text === "/yesterday") action = "report_day";
-    if (text === "/week") action = "report_range";
-    if (text === "/payout") action = "payout_day";
-
-    if (!action) {
-      await send(chatId, "❓ Неизвестная команда");
-      return;
-    }
-
-    const payload = {
-      action,
-      date: getDateByCmd(text)
-    };
-
-    const r = await fetch(GAS_URL, {
+    await fetch(`${TG_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: reply,
+      }),
     });
 
-    const json = await r.json();
-    await send(chatId, json.text || "Нет данных");
-
-  } catch (e) {
-    console.error(e);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("ERROR:", err);
+    res.sendStatus(200);
   }
 });
 
-async function send(chatId, text) {
-  await fetch(`${TELEGRAM_API}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: "HTML"
-    })
-  });
-}
+app.get("/", (req, res) => {
+  res.send("OK");
+});
 
-function getDateByCmd(cmd) {
-  const d = new Date();
-  if (cmd === "/yesterday") d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
-
-app.listen(process.env.PORT || 10000, () => {
-  console.log("🚀 Webhook bot started");
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log(`🚀 Bot listening on ${PORT}`);
 });
