@@ -1,13 +1,13 @@
 {
-  "name": "molecule-webhook",
+  "name": "molecule-assistant",
   "version": "1.0.0",
   "type": "module",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node src/index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "node-fetch": "^3.3.2",
-    "dayjs": "^1.11.11"
+    "node-fetch": "^3.3.2"
   }
 }
