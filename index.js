@@ -1,4 +1,5 @@
 import express from "express";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
@@ -6,48 +7,46 @@ app.use(express.json());
 const TG_TOKEN = process.env.TG_TOKEN;
 const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
 
+const PORT = process.env.PORT || 10000;
+
+console.log("🚀 TG_TOKEN exists:", !!TG_TOKEN);
+console.log("🚀 TG_API:", TG_API);
+
+// 👉 WEBHOOK
 app.post("/telegram", async (req, res) => {
   try {
-    console.log("UPDATE:", JSON.stringify(req.body));
+    const update = req.body;
+    console.log("📩 UPDATE:", JSON.stringify(update));
 
-    const message = req.body.message;
-    if (!message) {
+    if (!update.message) {
       return res.sendStatus(200);
     }
 
-    const chatId = message.chat.id;
-    const text = message.text || "";
+    const chatId = update.message.chat.id;
+    const text = update.message.text || "";
 
-    let reply = "🤖 Я жив";
-
-    if (text === "/start") {
-      reply = "✅ Aromat CashFlow онлайн\nНапиши что-нибудь.";
-    }
-
-    const tgRes = await fetch(`${TG_API}/sendMessage`, {
+    // 👇 ПРОСТОЙ ОТВЕТ
+    await fetch(`${TG_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: reply,
-      }),
+        text: `👋 Бот жив!\nТы написал: ${text}`
+      })
     });
-
-    const tgJson = await tgRes.json();
-    console.log("TG RESPONSE:", tgJson);
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("SEND ERROR:", err);
-    res.sendStatus(200);
+    console.error("❌ ERROR:", err);
+    res.sendStatus(500);
   }
 });
 
+// 👉 ROOT (чтобы не было Cannot GET /)
 app.get("/", (req, res) => {
-  res.send("OK");
+  res.send("Aromat CashFlow Bot is running 🚀");
 });
 
-const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 Bot listening on ${PORT}`);
+  console.log(`🤖 Bot listening on ${PORT}`);
 });
