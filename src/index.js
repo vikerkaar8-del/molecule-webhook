@@ -16,7 +16,6 @@ app.post('/webhook', async (req, res) => {
     const reply = await askGPT(userText);
     await sendMessage(chatId, reply);
   } catch (e) {
-    console.error(e);
     await sendMessage(chatId, 'Что-то пошло не так 🙏 Сейчас уточню и помогу.');
   }
 
