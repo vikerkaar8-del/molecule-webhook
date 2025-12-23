@@ -1,5 +1,4 @@
 import express from "express";
-import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
@@ -19,13 +18,13 @@ app.post("/telegram", async (req, res) => {
     const chatId = message.chat.id;
     const text = message.text || "";
 
-    let reply = "🤖 Я жив, но пока думаю…";
+    let reply = "🤖 Я жив";
 
     if (text === "/start") {
       reply = "✅ Aromat CashFlow онлайн\nНапиши что-нибудь.";
     }
 
-    await fetch(`${TG_API}/sendMessage`, {
+    const tgRes = await fetch(`${TG_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -34,9 +33,12 @@ app.post("/telegram", async (req, res) => {
       }),
     });
 
+    const tgJson = await tgRes.json();
+    console.log("TG RESPONSE:", tgJson);
+
     res.sendStatus(200);
   } catch (err) {
-    console.error("ERROR:", err);
+    console.error("SEND ERROR:", err);
     res.sendStatus(200);
   }
 });
