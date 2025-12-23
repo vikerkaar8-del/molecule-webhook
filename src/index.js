@@ -1,32 +1,20 @@
 import express from 'express';
-import { sendMessage } from './telegram.js';
-import { askGPT } from './gpt.js';
 
 const app = express();
 app.use(express.json());
 
-app.post('/webhook', async (req, res) => {
-  const message = req.body.message;
-  if (!message?.text) return res.sendStatus(200);
-
-  const chatId = message.chat.id;
-  const userText = message.text;
-
-  try {
-    const reply = await askGPT(userText);
-    await sendMessage(chatId, reply);
-  } catch (e) {
-    await sendMessage(chatId, 'Что-то пошло не так 🙏 Сейчас уточню и помогу.');
-  }
-
-  res.sendStatus(200);
+// корень — проверка, что сервер жив
+app.get('/', (req, res) => {
+  res.send('✅ Molecule test server is running');
 });
 
-app.get('/', (_, res) => {
-  res.send('Molecule Assistant is running');
+// фейковый webhook — просто логируем вход
+app.post('/webhook', (req, res) => {
+  console.log('📩 Webhook received:', JSON.stringify(req.body, null, 2));
+  res.sendStatus(200);
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log('Bot started on port', PORT);
+  console.log('🚀 Server started on port', PORT);
 });
